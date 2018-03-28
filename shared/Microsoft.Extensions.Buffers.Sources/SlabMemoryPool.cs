@@ -3,7 +3,6 @@
 
 using System.Collections.Concurrent;
 using System.Diagnostics;
-using System.IO.Pipelines;
 
 namespace System.Buffers
 {
@@ -143,6 +142,11 @@ namespace System.Buffers
         /// <param name="block">The block to return. It must have been acquired by calling Lease on the same memory pool instance.</param>
         internal void Return(MemoryPoolBlock block)
         {
+#if DEBUG
+            // Reinitialize so we can verify the contents didn't change while in the pool.
+            block.Initialize();
+#endif
+
 #if BLOCK_LEASE_TRACKING
             Debug.Assert(block.Pool == this, "Returned block was not leased from this pool");
             Debug.Assert(block.IsLeased, $"Block being returned to pool twice: {block.Leaser}{Environment.NewLine}");
@@ -169,6 +173,20 @@ namespace System.Buffers
                 GC.WaitForPendingFinalizers();
                 GC.Collect();
 #endif
+
+                // Discard blocks in pool
+                while (_blocks.TryDequeue(out MemoryPoolBlock block))
+                {
+#if DEBUG
+                    if (block.WasLeased)
+                    {
+                        block.EnsureUnmodified();
+                    }
+#endif
+
+                    GC.SuppressFinalize(block);
+                }
+
                 if (disposing)
                 {
                     while (_slabs.TryPop(out MemoryPoolSlab slab))
@@ -176,12 +194,6 @@ namespace System.Buffers
                         // dispose managed state (managed objects).
                         slab.Dispose();
                     }
-                }
-
-                // Discard blocks in pool
-                while (_blocks.TryDequeue(out MemoryPoolBlock block))
-                {
-                    GC.SuppressFinalize(block);
                 }
 
                 // N/A: free unmanaged resources (unmanaged objects) and override a finalizer below.

@@ -1,10 +1,9 @@
 // Copyright (c) Microsoft. All rights reserved.
 // Licensed under the MIT license. See LICENSE file in the project root for full license information.
 
-using System.Text;
-using System.Threading;
 using System.Diagnostics;
-using System.IO.Pipelines;
+using System.Runtime.InteropServices;
+using System.Threading;
 
 namespace System.Buffers
 {
@@ -14,6 +13,10 @@ namespace System.Buffers
     /// </summary>
     internal class MemoryPoolBlock : OwnedMemory<byte>
     {
+#if DEBUG
+        private const ulong InitilizationValue = 0xBAADF00DBAADF00D;
+#endif
+
         private readonly int _offset;
         private readonly int _length;
         private int _referenceCount;
@@ -51,6 +54,10 @@ namespace System.Buffers
                 return new Span<byte>(Slab.Array, _offset, _length);
             }
         }
+
+#if DEBUG
+        public bool WasLeased { get; set; }
+#endif
 
 #if BLOCK_LEASE_TRACKING
         public bool IsLeased { get; set; }
@@ -95,6 +102,19 @@ namespace System.Buffers
 
         public void Lease()
         {
+#if DEBUG
+            if (WasLeased)
+            {
+                EnsureUnmodified();
+            }
+            else
+            {
+                Initialize();
+            }
+
+            WasLeased = true;
+#endif
+
 #if BLOCK_LEASE_TRACKING
             Leaser = Environment.StackTrace;
             IsLeased = true;
@@ -151,5 +171,26 @@ namespace System.Buffers
                 return new MemoryHandle(this, (Slab.NativePointer + _offset + byteOffset).ToPointer());
             }
         }
+
+#if DEBUG
+        public void Initialize()
+        {
+            var ulongSpan = MemoryMarshal.Cast<byte, ulong>(Span);
+            ulongSpan.Fill(InitilizationValue);
+        }
+
+        public void EnsureUnmodified()
+        {
+            var ulongSpan = MemoryMarshal.Cast<byte, ulong>(Span);
+
+            for (var i = 0; i < ulongSpan.Length; i++)
+            {
+                if (ulongSpan[i] != InitilizationValue)
+                {
+                    Environment.FailFast($"Unexpected data in block. Expected: {InitilizationValue.ToString("X")} Actual: {ulongSpan[i].ToString("X")}");
+                }
+            }
+        }
+#endif
     }
 }
